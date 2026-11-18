@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="UUyc companion"
 APP="build/$APP_NAME.app"
-VERSION="1.1.3-fix.2"
+# 版本号单一来源：仓库根目录的 VERSION（与 build-app.sh 一致）
+VERSION="$(cat VERSION 2>/dev/null || echo 0.0.0)"
+VERSION="${VERSION_OVERRIDE:-$VERSION}"
 OUT_DIR="${1:-dist}"
 DMG="$OUT_DIR/UUyc-companion-$VERSION.dmg"
 

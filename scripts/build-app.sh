@@ -8,7 +8,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="1.1.3"
+# 版本号单一来源：仓库根目录的 VERSION 文件（语义化版本）。
+# 需要临时覆盖时用 VERSION_OVERRIDE=x.y.z 环境变量，不要改这里。
+VERSION="$(cat VERSION 2>/dev/null || echo 0.0.0)"
+VERSION="${VERSION_OVERRIDE:-$VERSION}"
 APP_NAME="UUyc companion"
 APP="build/$APP_NAME.app"
 LEGACY_APP="/Applications/UUDisplay.app"   # 改名前的安装位置

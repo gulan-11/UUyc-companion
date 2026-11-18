@@ -1,8 +1,9 @@
 # UUyc companion · 修复版
 
+**当前版本：1.2.0**
+
 > 本项目基于 [aoyamashou/UUyc-companion](https://github.com/aoyamashou/UUyc-companion) v1.1.3（MIT，2026-10 停更）二次修改，
 > 完整保留原作者的版权声明与提交历史。原作者：AoyamaShou。
-> 本仓库只修 bug，不加新功能。
 
 改善 Mac 版 UU远程 的使用体验：远程开始时自动提供与设备同分辨率的虚拟屏幕，告别上下大黑边；可选自动关闭其他屏幕。
 
@@ -104,7 +105,7 @@ designated => identifier "com.corndog.uudisplay" and certificate root = H"4191e3
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `UUyc-companion-1.1.3-fix.2.dmg`，打开后把 App 拖进 Applications。
+从 [Releases](../../releases) 下载 `UUyc-companion-1.2.0.dmg`，打开后把 App 拖进 Applications。
 
 **必须授权一次**（否则无法识别是哪台设备连入）：
 
@@ -128,6 +129,26 @@ bash scripts/make-dmg.sh           # 生成 dist/UUyc-companion-<版本>.dmg
 bash scripts/build-app.sh --install # 构建并安装到 /Applications
 
 ./scripts/test-connection.sh       # 跑回归测试
+```
+
+### 版本号
+
+版本号只存在仓库根目录的 `VERSION` 文件里，`build-app.sh` 与 `make-dmg.sh` 都读它，
+不再各写一份（之前就是这样导致 App 内是 `1.1.3`、DMG 却是 `1.1.3-fix.2`）。
+
+```bash
+./scripts/version.sh                # 查看当前版本
+./scripts/version.sh bump patch     # 1.2.0 → 1.2.1  修 bug
+./scripts/version.sh bump minor     # 1.2.0 → 1.3.0  加功能
+./scripts/version.sh bump major     # 1.2.0 → 2.0.0  不兼容变更
+./scripts/version.sh set 1.5.0      # 直接指定
+./scripts/version.sh tag            # 打 git tag（v1.2.0）
+```
+
+临时构建别的版本号用环境变量，不要改文件：
+
+```bash
+VERSION_OVERRIDE=1.2.1-test bash scripts/build-app.sh
 ```
 
 **关于签名**：默认用证书 `UUDisplay Signing` 签名，钥匙串路径
