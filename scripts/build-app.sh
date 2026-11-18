@@ -13,12 +13,35 @@ APP_NAME="UUyc companion"
 APP="build/$APP_NAME.app"
 LEGACY_APP="/Applications/UUDisplay.app"   # 改名前的安装位置
 SIGN_IDENTITY="${SIGN_IDENTITY:-UUDisplay Signing}"
+# 证书可能放在独立钥匙串里（login.keychain 被系统锁定/需要交互时用它）
+SIGN_KEYCHAIN="${SIGN_KEYCHAIN:-$HOME/Library/Keychains/uudisplay.keychain-db}"
 
 # SIGN_IDENTITY=- 表示 ad-hoc 签名（没有证书时从源码构建用；每次构建后辅助功能授权会失效）
-if [[ "${SIGN_IDENTITY}" != "-" ]] && ! security find-identity -v -p codesigning | grep -q "\"${SIGN_IDENTITY}\""; then
-  echo "❌ 钥匙串中找不到有效的代码签名证书「${SIGN_IDENTITY}」；没有证书可用 SIGN_IDENTITY=- 改为 ad-hoc 签名" >&2
-  exit 1
+if [[ "${SIGN_IDENTITY}" != "-" ]]; then
+  if [ -f "${SIGN_KEYCHAIN}" ]; then
+    security unlock-keychain -p "${SIGN_KEYCHAIN_PASSWORD:-uudisplaysign}" "${SIGN_KEYCHAIN}" 2>/dev/null || true
+    FOUND=$(security find-identity -v -p codesigning "${SIGN_KEYCHAIN}" 2>/dev/null | grep -c "\"${SIGN_IDENTITY}\"" || true)
+  else
+    FOUND=$(security find-identity -v -p codesigning 2>/dev/null | grep -c "\"${SIGN_IDENTITY}\"" || true)
+  fi
+  if [ "${FOUND:-0}" -eq 0 ]; then
+    echo "❌ 钥匙串中找不到有效的代码签名证书「${SIGN_IDENTITY}」；没有证书可用 SIGN_IDENTITY=- 改为 ad-hoc 签名" >&2
+    exit 1
+  fi
 fi
+
+# 签名参数：有证书时固定用它，保证每次构建的签名要求一致（辅助功能授权才能保留）
+# 用法：sign <路径> [--identifier <id>]
+sign() {
+  local target="$1"; shift
+  if [[ "${SIGN_IDENTITY}" == "-" ]]; then
+    codesign --force --sign - "$@" "$target"
+  elif [ -f "${SIGN_KEYCHAIN}" ]; then
+    codesign --force --sign "${SIGN_IDENTITY}" --keychain "${SIGN_KEYCHAIN}" "$@" "$target"
+  else
+    codesign --force --sign "${SIGN_IDENTITY}" "$@" "$target"
+  fi
+}
 
 swift build -c release --build-system native --product UUDisplay
 BIN="$(swift build -c release --build-system native --show-bin-path)/UUDisplay"
@@ -69,9 +92,16 @@ mkdir -p "$APP/Contents/Resources/zh-Hans.lproj" "$APP/Contents/Resources/en.lpr
 printf '"CFBundleDisplayName" = "UU远程伴侣";\n"CFBundleName" = "UU远程伴侣";\n' > "$APP/Contents/Resources/zh-Hans.lproj/InfoPlist.strings"
 printf '"CFBundleDisplayName" = "UUyc companion";\n"CFBundleName" = "UUyc companion";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 
-# 先签内嵌的看门狗可执行文件，再签整个 App
-codesign --force --sign "$SIGN_IDENTITY" --identifier com.corndog.uudisplay.watchdog "$APP/Contents/MacOS/UUDisplayWatchdog"
-codesign --force --sign "$SIGN_IDENTITY" --identifier com.corndog.uudisplay "$APP"
+# 先签内嵌的看门狗可执行文件，再签整个 App。
+# 固定证书签名后，TCC（辅助功能）记录的「证书叶子哈希」不再变化，升级后授权可保留；
+# ad-hoc 签名没有证书，TCC 记录里的证书哈希对不上，每次重建都要重新授权。
+if [[ "${SIGN_IDENTITY}" == "-" ]]; then
+  codesign --force --sign - --identifier com.corndog.uudisplay.watchdog "$APP/Contents/MacOS/UUDisplayWatchdog"
+  codesign --force --sign - --identifier com.corndog.uudisplay "$APP"
+else
+  sign "$APP/Contents/MacOS/UUDisplayWatchdog" --identifier com.corndog.uudisplay.watchdog
+  sign "$APP" --identifier com.corndog.uudisplay
+fi
 codesign --verify --strict --deep "$APP"
 echo "✅ 已生成 $APP"
 
