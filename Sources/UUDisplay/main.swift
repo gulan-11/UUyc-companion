@@ -16,6 +16,11 @@ import SwiftUI
 
 if CommandLine.arguments.contains("--watchdog") { Watchdog.run() }
 
+// 短命帮手：把某块屏的模式切到目标值（见 ModePin：主进程亲自切模式会让虚拟屏迟迟不下线）
+if let i = CommandLine.arguments.firstIndex(of: "--set-mode") {
+    ModePin.runHelper(Array(CommandLine.arguments[(i + 1)...]))
+}
+
 if CommandLine.arguments.contains("--dump-devices") {
     if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
     guard let devices = UUReader.readDevices() else { print("未读到 UU 主窗口"); exit(1) }

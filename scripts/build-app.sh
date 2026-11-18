@@ -15,8 +15,8 @@ LEGACY_APP="/Applications/UUDisplay.app"   # 改名前的安装位置
 SIGN_IDENTITY="${SIGN_IDENTITY:-UUDisplay Signing}"
 
 # SIGN_IDENTITY=- 表示 ad-hoc 签名（没有证书时从源码构建用；每次构建后辅助功能授权会失效）
-if [[ "$SIGN_IDENTITY" != "-" ]] && ! security find-identity -v -p codesigning | grep -q "\"$SIGN_IDENTITY\""; then
-  echo "❌ 钥匙串中找不到有效的代码签名证书「$SIGN_IDENTITY」；没有证书可用 SIGN_IDENTITY=- 改为 ad-hoc 签名" >&2
+if [[ "${SIGN_IDENTITY}" != "-" ]] && ! security find-identity -v -p codesigning | grep -q "\"${SIGN_IDENTITY}\""; then
+  echo "❌ 钥匙串中找不到有效的代码签名证书「${SIGN_IDENTITY}」；没有证书可用 SIGN_IDENTITY=- 改为 ad-hoc 签名" >&2
   exit 1
 fi
 
@@ -29,9 +29,14 @@ cp "$BIN" "$APP/Contents/MacOS/UUDisplay"
 # 看门狗用独立文件名，避免 killall/pkill UUDisplay 时连同看门狗一起结束
 cp "$BIN" "$APP/Contents/MacOS/UUDisplayWatchdog"
 # PermissionFlow 资源包（本地化文案等），放 Contents/Resources 供 PermissionFlowResources 查找
-cp -R "$(dirname "$BIN")/PermissionFlow_PermissionFlow.bundle" "$APP/Contents/Resources/"
+if [ -d "$(dirname "$BIN")/PermissionFlow_PermissionFlow.bundle" ]; then
+  cp -R "$(dirname "$BIN")/PermissionFlow_PermissionFlow.bundle" "$APP/Contents/Resources/"
+fi
 # AboutKit 资源包（作者头像），放 Contents/Resources
-cp -R "$(dirname "$BIN")/AboutKit_AboutKit.bundle" "$APP/Contents/Resources/"
+# 本地替代的 AboutKit 没有资源包，存在才拷
+if [ -d "$(dirname "$BIN")/AboutKit_AboutKit.bundle" ]; then
+  cp -R "$(dirname "$BIN")/AboutKit_AboutKit.bundle" "$APP/Contents/Resources/"
+fi
 # 功能导览配图（TourKit 从 Bundle.main 的 Resources 根目录按文件名查找）
 cp Assets/Tour/*.png "$APP/Contents/Resources/"
 # App 图标与菜单栏模板图（见 Assets/AppIcon/README.md）

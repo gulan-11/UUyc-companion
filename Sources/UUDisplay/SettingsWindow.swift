@@ -507,11 +507,17 @@ final class SettingsWindowController {
     var restorePhysical: (() -> Void)?
 
     /// - Parameter pane: 打开时展开的面板，nil 表示全部收起
+    ///
+    /// 用户反馈第 3 条「点开设置后窗口一直不出现，需要再点一次」的修复：
+    ///   原实现在 `NSWindow(contentViewController:)` 之后直接改 styleMask，
+    ///   会把窗口从 titled 重置回默认状态、丢掉内容尺寸，窗口建成 0×0 或跑到屏外；
+    ///   并且 LSUIElement（无 Dock 图标）进程里 `activate(ignoringOtherApps:)` 不足以把窗口提到最前，
+    ///   于是在全屏/远程画面下看起来「没反应」。现在：先定 styleMask 再设内容、显式给尺寸、
+    ///   用 `.floating` 层级并 `orderFrontRegardless()`，确保一定看得见。
     func show(pane: SettingsPane? = nil) {
         if let window, let model {
             if let pane, model.expanded != pane { model.toggle(pane) }
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(window)
             return
         }
         let model = SettingsModel()
@@ -528,11 +534,17 @@ final class SettingsWindowController {
         // 注意：直接给 NSHostingView 设 sizingOptions = .preferredContentSize 会让窗口初始尺寸为 0×0（看不见）
         let hosting = NSHostingController(rootView: SettingsView(model: model))
         hosting.sizingOptions = [.preferredContentSize]
-        let w = NSWindow(contentViewController: hosting)
-        w.styleMask = [.titled, .closable, .miniaturizable]
+        let fitting = hosting.view.fittingSize
+        // 顺序要紧：先按最终 styleMask 建窗口，再挂内容，避免改 styleMask 把内容尺寸清成 0
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: fitting),
+                         styleMask: [.titled, .closable, .miniaturizable],
+                         backing: .buffered, defer: false)
+        w.contentViewController = hosting
         w.title = "设置"
         w.isReleasedWhenClosed = false
-        w.setContentSize(hosting.view.fittingSize)  // 先定好尺寸再居中，否则按 0×0 居中会偏到右侧
+        w.level = .floating                       // 远程全屏画面之上也能看见
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        w.setContentSize(fitting.width > 1 ? fitting : NSSize(width: 720, height: 300))
         w.center()
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
             self?.model?.stop()
@@ -540,8 +552,20 @@ final class SettingsWindowController {
             self?.window = nil
         }
         window = w
-        w.makeKeyAndOrderFront(nil)
+        present(w)
+    }
+
+    /// 把窗口可靠地提到最前：LSUIElement 进程里只靠 activate 不够
+    private func present(_ w: NSWindow) {
+        if w.isMiniaturized { w.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        w.orderFrontRegardless()
+        // 少数情况下系统仍把它放到别的空间：稍后再抬一次
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak w] in
+            guard let w, w.isVisible else { return }
+            w.orderFrontRegardless()
+        }
     }
 
     /// 调试：渲染各状态为 PNG（--render-settings <目录>）

@@ -6,6 +6,18 @@ enum UUReader {
     static func readControllers() -> [String]? { nil }
 }
 enum Log { static func info(_ message: String) {} }
+enum UUPresence {
+    static func overlayPresent() -> Bool { false }
+    static func servingAssertion() -> Bool { false }
+    static func any() -> Bool { false }
+}
+/// 测试替身：推流信号可控（默认「不在推流」，nil = 未知）
+final class CaptureLogWatcher {
+    var stream: Bool? = false
+    func start() {}
+    func stop() {}
+    func sample() -> Bool? { stream }
+}
 
 @main struct MonitorTests {
     static func main() {
@@ -19,7 +31,7 @@ enum Log { static func info(_ message: String) {} }
             lock.lock(); reads += 1; lock.unlock()
             Thread.sleep(forTimeInterval: 3)
             return ["stale controller"]
-        }, hasOverlay: { overlay })
+        }, hasOverlay: { overlay }, hasAssertion: { false })
         monitor.onConnect = { connects += 1 }
         monitor.onDisconnect = { disconnects += 1 }
         monitor.start()

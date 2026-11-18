@@ -7,3 +7,5 @@ swiftc Sources/UUDisplay/UUConnectionState.swift tests/connection-main.swift -o 
 "$TEST_DIR/connection-tests"
 swiftc Sources/UUDisplay/UUConnectionState.swift Sources/UUDisplay/UUMonitor.swift tests/monitor-main.swift -o "$TEST_DIR/monitor-tests"
 "$TEST_DIR/monitor-tests"
+swiftc Sources/UUDisplay/UUConnectionState.swift Sources/UUDisplay/Config.swift tests/presence-main.swift -o "$TEST_DIR/presence-tests"
+"$TEST_DIR/presence-tests"

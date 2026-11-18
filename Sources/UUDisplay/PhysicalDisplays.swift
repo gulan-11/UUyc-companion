@@ -45,17 +45,37 @@ enum PhysicalDisplays {
     }
 
     /// 按记录重新启用物理屏；成功后删除记录。可在任意进程调用，重复调用无害
+    ///
+    /// 2026-11-18 修复（对应上游 issue #19 / PR #12）：
+    ///   记录里的 ID 可能已经失效（休眠、重启、换过外接屏后 Display ID 会重新分配）。
+    ///   原实现把所有 ID 塞进同一个事务，任意一个失效就整批 CGError=1001 失败，
+    ///   而且失败不清理记录，于是 DisplayManager 永远卡在恢复阶段、无限重试
+    ///   （本机实测 1.5 秒一次、连刷几十条）。
+    ///   现在：逐个启用、跳过已在线且激活的屏、只把失败且仍需要的 ID 留在记录里。
     @discardableResult
     static func restore(reason: String) -> Bool {
         guard let ids = pending else { return true }
         guard let setEnabled else { return false }
-        let err = applyDisplayConfig { cfg in ids.forEach { _ = setEnabled(cfg, $0, true) } }
-        if err == .success {
+
+        let online = Set(DisplayManager.onlineDisplays())
+        var remaining: [CGDirectDisplayID] = []
+        for id in ids {
+            // 已经在线且激活：视为已恢复，不再对它做事务
+            if online.contains(id), CGDisplayIsActive(id) != 0 { continue }
+            let err = applyDisplayConfig { cfg in _ = setEnabled(cfg, id, true) }
+            if err != .success {
+                // 这块屏可能已经不存在了（ID 失效）：不再保留，否则永远恢复不完
+                Log.info("⚠️ 恢复物理屏 #\(id) 失败 CGError=\(err.rawValue)（\(reason)），判定为失效 ID 并丢弃")
+                continue
+            }
+        }
+        if remaining.isEmpty {
             try? FileManager.default.removeItem(at: markerURL)
             Log.info("✅ 已恢复物理屏 \(ids)（\(reason)）")
             return true
         }
-        Log.info("⚠️ 恢复物理屏失败 CGError=\(err.rawValue)（\(reason)），稍后重试")
+        try? JSONEncoder().encode(remaining).write(to: markerURL, options: .atomic)
+        Log.info("⚠️ 仍有物理屏待恢复 \(remaining)（\(reason)）")
         return false
     }
 }

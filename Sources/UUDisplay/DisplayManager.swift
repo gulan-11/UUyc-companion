@@ -4,8 +4,11 @@
 //              随后 WindowServer 在 GenerateModeListForDisplay 中 abort，系统注销重启。
 //      另：虚拟屏创建后约 1 秒、尚未完全上线时就释放，会让 WindowServer 显示配置卡死（所有事务 10 秒超时，
 //      需重启恢复），因此释放前必须已上线且存活 ≥ 2.5 秒；一旦检测到超时即进入保护状态，不再做拓扑变化。
-// 其他要点：虚拟屏只给一个模式且不改；GUI 主线程不能调 CGCompleteDisplayConfiguration（放 cgQueue）；
+// 其他要点：GUI 主线程不能调 CGCompleteDisplayConfiguration（放 cgQueue）；
 //          物理屏是否被禁用以磁盘记录为准（看门狗可能在别的进程里已恢复）。
+// 2026-11-18 补充：虚拟屏的模式会被 WindowServer 在「屏幕组合变化」时改回它记住的档位（常见 1280×720），
+//          所以建屏后、以及每次显示器配置变化后都要核对并把模式钉回目标值，见 ModePin。
+import AppKit
 import CGVirtualDisplayBridge
 import CoreGraphics
 import Foundation
@@ -20,6 +23,8 @@ final class DisplayManager {
     var shouldDisablePhysical: () -> Bool = { false }
     /// 用户手动恢复后，本次连接内不再禁用
     private var physicalOverride = false
+    /// 断开后的「暂留」：保留虚拟屏等快速重连，但不关物理屏
+    private var parked = false
 
     // 实际状态
     private var vd: CGVirtualDisplay?
@@ -33,6 +38,13 @@ final class DisplayManager {
     private var failedCfg: DeviceConfig?
     /// 建屏前各物理屏的原点，用于还原
     private var savedOrigins: [CGDirectDisplayID: CGPoint] = [:]
+    /// 模式是否已钉住（建屏后/组合变化后核对一次，漂移就设回）
+    private var modePinned = false
+    private var pinAttempts = 0
+    /// 上次钉模式的时间：钉模式本身会触发配置变化通知，用它避免自己触发自己
+    private var lastPinAt = Date.distantPast
+    /// 显示器配置变化回调（组合变化会让系统套用旧模式）
+    private var reconfigObserver: NSObjectProtocol?
 
     // 执行器
     private var busy = false
@@ -73,11 +85,22 @@ final class DisplayManager {
 
     func create(_ cfg: DeviceConfig) {
         if !DisplayManager.same(desired, cfg) { failedCfg = nil }
+        parked = false
+        // 新一次远程：解除上一次「手动恢复」的豁免，否则物理屏再也不会被关
+        physicalOverride = false
         desired = cfg
         kick()
     }
 
+    /// 断开时暂留：物理屏立刻点亮（本机要用），虚拟屏先不拆，等快速重连
+    func park() {
+        parked = true
+        desired = nil
+        kick()
+    }
+
     func remove(completion: (() -> Void)? = nil) {
+        parked = false
         desired = nil
         failedCfg = nil
         physicalOverride = false
@@ -173,6 +196,13 @@ final class DisplayManager {
         }
 
         guard let want = recovering ? nil : desired else {
+            // 暂留：只点亮物理屏，虚拟屏与布局记录都保留
+            if parked {
+                if physicalOff {
+                    return runCG(settle: 1.0) { PhysicalDisplays.restore(reason: "断开暂留") ? .success : .failure }
+                }
+                return
+            }
             // 目标=无：恢复物理屏 → 释放虚拟屏 → 还原布局
             if physicalOff {
                 return runCG(settle: 1.5) { PhysicalDisplays.restore(reason: "远程结束") ? .success : .failure }
@@ -185,6 +215,8 @@ final class DisplayManager {
                 vd = nil
                 current = nil
                 mainSet = false
+                modePinned = false
+                pinAttempts = 0
                 release(&all)
                 return finish(settle: 1.5)
             }
@@ -214,6 +246,8 @@ final class DisplayManager {
             vd = nil
             current = nil
             mainSet = false
+            modePinned = false
+            pinAttempts = 0
             waitOnlineTries = 0
             if !createDisplay(want) { failedCfg = want }
             return finish(settle: 1.0)
@@ -243,6 +277,30 @@ final class DisplayManager {
                 }
                 Log.info(err == .success ? "✅ 虚拟屏已设为主屏" : "⚠️ 设主屏失败 CGError=\(err.rawValue)")
                 return err
+            }
+        }
+
+        // 模式核对：系统会在屏幕组合变化时把虚拟屏拨回它记住的档位（实测常见 1280×720），
+        // UU远程 自己也会改。因此收敛到「屏已在、主屏已设」之后核对一次，漂移就钉回去。
+        if mainSet, !modePinned, let id = vd?.displayID, let cfg = current {
+            if DisplayManager.modeMatches(id, cfg) {
+                modePinned = true
+                pinAttempts = 0
+            } else if pinAttempts < 8, Date().timeIntervalSince(lastPinAt) > 1.0 {
+                pinAttempts += 1
+                lastPinAt = Date()
+                busy = true
+                Log.info("⚠️ 虚拟屏当前模式 \(DisplayManager.describeMode(id))，与目标 \(cfg.sizeLabel) 不符，钉回（第 \(pinAttempts) 次）")
+                ModePin.pinViaHelper(id, width: cfg.width, height: cfg.height, hiDPI: cfg.hiDPI) { [weak self] ok in
+                    guard let self else { return }
+                    Log.info(ok ? "✅ 模式已钉回 \(cfg.sizeLabel)" : "⚠️ 钉模式失败（该屏没有这一档）")
+                    self.finish(settle: 0.4)
+                }
+                return
+            } else {
+                // 反复被改：放弃本轮，避免死循环；下次配置变化会重新核对
+                modePinned = true
+                Log.info("⚠️ 模式被反复改动，本轮停止钉模式")
             }
         }
 
@@ -321,6 +379,36 @@ final class DisplayManager {
         }
         Log.info(err == .success ? "✅ 已还原显示器布局" : "⚠️ 还原布局 CGError=\(err.rawValue)")
         return err
+    }
+
+    // MARK: - 模式核对
+
+    static func describeMode(_ id: CGDirectDisplayID) -> String {
+        guard let m = CGDisplayCopyDisplayMode(id) else { return "无模式" }
+        return "\(m.width)×\(m.height)（像素 \(m.pixelWidth)×\(m.pixelHeight)）"
+    }
+
+    /// 当前模式是否已经是目标模式
+    static func modeMatches(_ id: CGDirectDisplayID, _ cfg: DeviceConfig) -> Bool {
+        guard let m = CGDisplayCopyDisplayMode(id) else { return false }
+        let w = cfg.hiDPI ? cfg.width / 2 : cfg.width
+        let h = cfg.hiDPI ? cfg.height / 2 : cfg.height
+        guard m.width == w, m.height == h else { return false }
+        return cfg.hiDPI ? (m.pixelWidth == 2 * w) : (m.pixelWidth == w)
+    }
+
+    /// 监听显示器配置变化：组合一变系统就会套用旧模式，这里立刻把模式重新钉回去
+    func startObservingReconfig() {
+        guard reconfigObserver == nil else { return }
+        reconfigObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            guard self.vd != nil, self.current != nil else { return }
+            if self.modePinned { self.modePinned = false; self.pinAttempts = 0 }
+            Log.info("显示器配置变化，重新核对虚拟屏模式")
+            self.kick()
+        }
     }
 
     private func writeMarker() {

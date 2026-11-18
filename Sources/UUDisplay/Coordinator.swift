@@ -14,6 +14,8 @@ final class Coordinator {
     private var namePoll: Timer?
     private var connectedAt = Date.distantPast
     private var openedUUWindow = false
+    /// 断开延迟拆除的令牌：期间重连则作废
+    private var disconnectToken = 0
 
     /// 调试：模拟连入的控制端名称（不读 UU）
     var simulatedName: String?
@@ -22,6 +24,7 @@ final class Coordinator {
 
     func start() {
         display.shouldDisablePhysical = { [weak self] in self?.physicalDisableAllowed ?? false }
+        display.startObservingReconfig()
         display.recoverIfNeeded()
         monitor.onConnect = { [weak self] in self?.handleConnect() }
         monitor.onDisconnect = { [weak self] in self?.handleDisconnect() }
@@ -63,9 +66,18 @@ final class Coordinator {
     func handleDisconnect() {
         namePoll?.invalidate()
         namePoll = nil
-        display.remove()
         controllerName = nil
         onChange?()
+        // 物理屏立刻点亮（本机要用），虚拟屏留 15 秒：
+        // 快速重连视为同一次远程，避免拆建导致的模式回退与画面黑边
+        display.park()
+        let token = disconnectToken &+ 1
+        disconnectToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.disconnectToken == token, !self.connected else { return }
+            self.display.remove()
+            self.onChange?()
+        }
     }
 
     /// 返回 true 表示已拿到名称、无需继续轮询
@@ -77,11 +89,32 @@ final class Coordinator {
             resolve(name)
             return true
         }
+        // 读不到名字（辅助功能未授权、UU 主窗口关着、别的 App 全屏）时按优先级兜底，
+        // 否则用户会看到「虚拟屏不生成」
+        if elapsed >= 2, let guess = guessedDevice() {
+            Log.info("读不到控制端名称，按「\(guess.name)」准备虚拟屏（\(guess == singleConfiguredDevice() ? "唯一已配置设备" : "上次的控制端")）")
+            controllerName = guess.name
+            apply(guess)
+            return true
+        }
         if elapsed >= 30 {
             Log.info("30 秒内未读到控制端名称，停止等待")
             return true
         }
         return false
+    }
+
+    /// 唯一一台填了分辨率的平板/手机（电脑不算）
+    private func singleConfiguredDevice() -> DeviceConfig? {
+        let candidates = store.config.devices.filter { $0.kind != .computer && $0.hasSize }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// 读不到名字时的兜底设备：上次的控制端优先，其次唯一已配置的那台
+    private func guessedDevice() -> DeviceConfig? {
+        if let last = store.device(named: store.config.lastController),
+           last.kind != .computer, last.hasSize { return last }
+        return singleConfiguredDevice()
     }
 
     private func readControllerName() -> String? {
@@ -103,6 +136,7 @@ final class Coordinator {
     private func resolve(_ name: String) {
         controllerName = name
         Log.info("控制端：\(name)")
+        if store.config.lastController != name { store.config.lastController = name }
         let cfg: DeviceConfig?
         if let known = store.device(named: name) {
             cfg = known
@@ -157,6 +191,7 @@ final class Coordinator {
 
     func setDisablePhysical(_ on: Bool) {
         store.config.disablePhysical = on
+        if on { monitor.holdQuiet(for: 8) }
         if on { display.disablePhysicalIfNeeded() } else { display.restorePhysicalNow(override: false) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.onChange?() }
     }

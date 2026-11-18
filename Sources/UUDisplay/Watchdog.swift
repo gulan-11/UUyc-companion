@@ -1,5 +1,15 @@
 // 看门狗：由 launchd 托管（KeepAlive）的独立进程，兜底恢复被禁用的物理屏
-// 触发条件（存在禁用记录时）：主程序不在 / 心跳超时（卡死，先强杀再恢复）/ UU 已断开 5 秒
+// 触发条件（存在禁用记录时）：主程序不在 / 心跳超时（卡死，先强杀再恢复）/ UU 确已断开
+//
+// 2026-11-18 修复（用户反馈第 2 条「Mac 的屏幕启动了，不会关闭」）：
+//   原判定只看覆盖窗口 UURemoteServer 是否在屏。实测远程推流期间该窗口经常一个都没有，
+//   于是看门狗每 5 秒就认定「UU 已断开」并把物理屏点亮；主程序又立刻关掉，两者来回拉锯
+//   （日志中 17:34:49 关闭 → 17:34:50 恢复 → 17:34:51 关闭 → 17:34:55 恢复）。
+//   每次开关都是一次屏幕组合变化，WindowServer 顺手把虚拟屏拨回它记住的 1280×720，
+//   这就是「每次都要手动切到 2560×1440」的直接原因。
+//   现在：① 用三路信号（覆盖窗口 / 推流断言 / 推流日志）判在场；
+//        ② 主程序刚关屏后的宽限期内一律不动；
+//        ③ 连续多拍都确认不在场才恢复，避免一次误判就点亮屏幕。
 import CoreGraphics
 import Foundation
 import ServiceManagement
@@ -31,7 +41,10 @@ enum Watchdog {
     /// 检查间隔（实测 1 秒间隔时 CPU 约 0.2%，改为 5 秒进一步降低开销，代价是恢复最多慢几秒）
     static let interval: TimeInterval = 5
     static let appMaxAge: TimeInterval = 10
-    static let uuGoneLimit: TimeInterval = 5
+    /// 判定 UU 确实离开所需的持续时间：跨过多次采样，单次误判不会点亮屏幕
+    static let uuGoneLimit: TimeInterval = 25
+    /// 物理屏刚被主程序关闭后的宽限期：期间不判离开（关屏本身会让 UU 短暂停流）
+    static let graceAfterDisable: TimeInterval = 20
 
     /// 心跳超时须大于检查间隔，留出一个间隔的余量
     static var isRunning: Bool { Heartbeat.alive(Heartbeat.watchdogURL, maxAge: interval * 2 + 2) }
@@ -42,17 +55,28 @@ enum Watchdog {
         try? FileManager.default.createDirectory(at: ConfigStore.dir, withIntermediateDirectories: true)
         Log.info("[看门狗] 启动 pid=\(getpid())")
         var uuGoneSince: Date?
+        var disabledSince = Date()
+        var lastPending: [CGDirectDisplayID]?
         while true {
             autoreleasepool {
                 Heartbeat.beat(Heartbeat.watchdogURL)
-                guard PhysicalDisplays.pending != nil else { uuGoneSince = nil; return }
+                guard let pending = PhysicalDisplays.pending else {
+                    uuGoneSince = nil
+                    lastPending = nil
+                    return
+                }
+                // 禁用记录换了（新一次关屏）：重新计宽限期
+                if pending != lastPending {
+                    lastPending = pending
+                    disabledSince = Date()
+                    uuGoneSince = nil
+                }
 
                 let hb = Heartbeat.read(Heartbeat.appURL)
                 let appExists = hb.map { kill($0.pid, 0) == 0 } ?? false
                 let appHealthy = appExists && (hb?.age ?? .infinity) < appMaxAge
                 // 测试开关：假定 UU 一直连着，用于单独验证心跳超时
-                let uu = assumeUU || UUMonitor.overlayPresent()
-                uuGoneSince = uu ? nil : (uuGoneSince ?? Date())
+                let uu = assumeUU || UUPresence.any() || UUPresence.servingAssertion()
 
                 if !appHealthy {
                     if appExists, let pid = hb?.pid {
@@ -60,8 +84,19 @@ enum Watchdog {
                         kill(pid, SIGKILL)
                     }
                     PhysicalDisplays.restore(reason: "看门狗：主程序\(appExists ? "卡死" : "不在")")
-                } else if let t = uuGoneSince, Date().timeIntervalSince(t) > uuGoneLimit {
-                    PhysicalDisplays.restore(reason: "看门狗：UU 已断开但物理屏未恢复")
+                    uuGoneSince = nil
+                    return
+                }
+
+                // 主程序健康：只在「宽限期已过 + 连续多拍确认不在场」时才恢复
+                guard Date().timeIntervalSince(disabledSince) > graceAfterDisable else {
+                    uuGoneSince = nil
+                    return
+                }
+                uuGoneSince = uu ? nil : (uuGoneSince ?? Date())
+                if let t = uuGoneSince, Date().timeIntervalSince(t) > uuGoneLimit {
+                    PhysicalDisplays.restore(reason: "看门狗：UU 确已断开但物理屏未恢复")
+                    uuGoneSince = nil
                 }
             }
             Thread.sleep(forTimeInterval: interval)

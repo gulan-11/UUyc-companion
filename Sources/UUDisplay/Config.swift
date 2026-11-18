@@ -56,6 +56,8 @@ struct AppConfig: Codable {
     var shouldRunWatchdog: Bool { watchdogEnabled ?? false }
     /// 是否已看过首次启动功能导览
     var tourShown: Bool?
+    /// 上一次的控制端名称：读不到名字时按它兜底（辅助功能未授权、UU 主窗口关着都能用）
+    var lastController: String?
 }
 
 final class ConfigStore {
