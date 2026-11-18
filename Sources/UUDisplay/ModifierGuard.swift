@@ -41,11 +41,19 @@ final class ModifierGuard {
         Modifier(name: "Shift", keyCode: 0x3C, flag: .maskShift, usage: 0xE5),
     ]
 
-    /// 连续多少拍判定为幽灵按键才动手（0.2s × 3 = 0.6s）
-    private static let strikesNeeded = 3
+    /// 连续多少拍判定为幽灵按键才动手。
+    /// 原为 3 拍（0.6 秒），实测会误伤：用户 Control+点击 打开「打开方式」菜单时，
+    /// 0.6 秒就把它当成幽灵按键清掉（日志里 9 次触发，多半是这种）。
+    /// 提高到 10 拍（2 秒）：真实的 Control+点击、长按都不会被误伤，
+    /// 而真正卡住的修饰键会持续几秒到几分钟，2 秒完全来得及。
+    private static let strikesNeeded = 10
 
     private var timer: Timer?
     private var strikes: [CGKeyCode: Int] = [:]
+    /// 本轮「事件流说按下」期间，HID 是否至少读到过一次真实按下。
+    /// 读到过 = 用户确实按了这个键，只是 HID 偶尔读不到 → 不判定为幽灵。
+    /// 从没读到过 = 极可能是幽灵按键。
+    private var sawRealPress: [CGKeyCode: Bool] = [:]
     private var lastFixAt = Date.distantPast
     private(set) var fixCount = 0
     private(set) var lastFixedModifier: String?
@@ -83,10 +91,18 @@ final class ModifierGuard {
                 || CGEventSource.keyState(.hidSystemState, key: m.keyCode)
             guard eventSaysDown else {
                 strikes[m.keyCode] = 0
+                sawRealPress[m.keyCode] = false   // 状态清空，下一轮重新观察
                 continue
             }
             if ModifierGuard.realKeyDown(usage: m.usage) {
                 strikes[m.keyCode] = 0        // 真实按住：不干预
+                sawRealPress[m.keyCode] = true   // 记下「这个键确实被按过」
+                continue
+            }
+            // 事件流说按着、HID 此刻读不到：
+            // 如果这一轮里 HID 从没报告过按下，说明按下来源不是真实键盘（幽灵按键）
+            // 如果报告过，说明是真实按键中途读不到，不干预
+            if sawRealPress[m.keyCode] == true {
                 continue
             }
             let n = (strikes[m.keyCode] ?? 0) + 1
@@ -94,6 +110,7 @@ final class ModifierGuard {
             if n >= ModifierGuard.strikesNeeded {
                 release(m)
                 strikes[m.keyCode] = 0
+                sawRealPress[m.keyCode] = false
             }
         }
     }
