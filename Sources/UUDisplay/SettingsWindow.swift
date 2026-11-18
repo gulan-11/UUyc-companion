@@ -512,8 +512,10 @@ final class SettingsWindowController {
     ///   原实现在 `NSWindow(contentViewController:)` 之后直接改 styleMask，
     ///   会把窗口从 titled 重置回默认状态、丢掉内容尺寸，窗口建成 0×0 或跑到屏外；
     ///   并且 LSUIElement（无 Dock 图标）进程里 `activate(ignoringOtherApps:)` 不足以把窗口提到最前，
-    ///   于是在全屏/远程画面下看起来「没反应」。现在：先定 styleMask 再设内容、显式给尺寸、
-    ///   用 `.floating` 层级并 `orderFrontRegardless()`，确保一定看得见。
+    ///   于是在全屏/远程画面下看起来「没反应」。现在：先定 styleMask 再设内容、显式给尺寸，
+    ///   只在唤出这一刻用 `orderFrontRegardless()` 提到最前。
+    /// 注意：不要设 `level = .floating`——那会让窗口永久压在别的 App 之上（用户反馈「一直置顶」）。
+    ///   唤出后恢复 `.normal`，用户可以正常把它压到后台。
     func show(pane: SettingsPane? = nil) {
         if let window, let model {
             if let pane, model.expanded != pane { model.toggle(pane) }
@@ -542,8 +544,9 @@ final class SettingsWindowController {
         w.contentViewController = hosting
         w.title = "设置"
         w.isReleasedWhenClosed = false
-        w.level = .floating                       // 远程全屏画面之上也能看见
+        w.level = .normal                          // 正常层级：不长期压在别的 App 之上
         w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        w.hidesOnDeactivate = false
         w.setContentSize(fitting.width > 1 ? fitting : NSSize(width: 720, height: 300))
         w.center()
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
@@ -555,16 +558,19 @@ final class SettingsWindowController {
         present(w)
     }
 
-    /// 把窗口可靠地提到最前：LSUIElement 进程里只靠 activate 不够
+    /// 把窗口可靠地提到最前：LSUIElement 进程里只靠 activate 不够。
+    /// 只在唤出的瞬间提权，随后立刻回到正常层级，避免「一直置顶」。
     private func present(_ w: NSWindow) {
         if w.isMiniaturized { w.deminiaturize(nil) }
+        // 短暂抬到 floating 保证盖住远程全屏画面，0.4 秒后落回 normal
+        w.level = .floating
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         w.orderFrontRegardless()
-        // 少数情况下系统仍把它放到别的空间：稍后再抬一次
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak w] in
-            guard let w, w.isVisible else { return }
-            w.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak w] in
+            guard let w else { return }
+            // 用户可能已经关掉窗口；还在就落回正常层级
+            if w.isVisible { w.level = .normal }
         }
     }
 
