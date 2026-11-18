@@ -58,6 +58,12 @@ struct AppConfig: Codable {
     var tourShown: Bool?
     /// 上一次的控制端名称：读不到名字时按它兜底（辅助功能未授权、UU 主窗口关着都能用）
     var lastController: String?
+    /// 远程期间静音本机扬声器（声音只走控制端）。缺省开启
+    var muteLocally: Bool?
+    var shouldMuteLocally: Bool { muteLocally ?? true }
+    /// 自动修复卡住的修饰键（Command 等）。缺省开启
+    var fixStuckModifiers: Bool?
+    var shouldFixStuckModifiers: Bool { fixStuckModifiers ?? true }
 }
 
 final class ConfigStore {

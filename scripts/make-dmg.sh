@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="UUyc companion"
 APP="build/$APP_NAME.app"
-VERSION="1.1.3-fix.1"
+VERSION="1.1.3-fix.2"
 OUT_DIR="${1:-dist}"
 DMG="$OUT_DIR/UUyc-companion-$VERSION.dmg"
 
@@ -47,6 +47,15 @@ UU远程伴侣（UUyc companion）修复版
 恢复屏幕的快捷键
 ----------------
 ⌃ control + ⌥ option + ⌘ command + 9   立即恢复所有物理屏
+
+本版新增
+--------
+1. 远程时静音这台 Mac 的扬声器：声音只从控制端（Windows/手机）播放，
+   本机不出声。实测设备静音不影响 UU 采集系统音频。远程结束自动恢复。
+2. 自动修复卡住的修饰键：远控时偶发 Command 收不回来（点图标弹文件夹、
+   菜单栏点不动），远程期间核对真实键盘状态，发现幽灵按下就补发 keyUp。
+
+两项都可以在设置里单独关闭。
 
 卸载
 ----

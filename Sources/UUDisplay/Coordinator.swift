@@ -5,6 +5,7 @@ import AppKit
 final class Coordinator {
     let monitor = UUMonitor()
     let display = DisplayManager()
+    let modifierGuard = ModifierGuard()
     private let store = ConfigStore.shared
 
     /// 状态变化时通知菜单栏刷新
@@ -29,6 +30,19 @@ final class Coordinator {
         monitor.onConnect = { [weak self] in self?.handleConnect() }
         monitor.onDisconnect = { [weak self] in self?.handleDisconnect() }
         monitor.start()
+
+        // 修饰键守卫只在远程期间工作：本机自己用的时候不插手
+        modifierGuard.isEnabled = { [weak self] in
+            guard let self else { return false }
+            return self.connected && self.store.config.shouldFixStuckModifiers
+        }
+        modifierGuard.start()
+
+        // 上次异常退出留下的静音记录：先恢复，避免本机一直没声音
+        if AudioControl.pending {
+            Log.info("发现上次异常退出的静音记录，先恢复本机音频")
+            AudioControl.restoreAfterRemote(reason: "启动时恢复")
+        }
     }
 
     /// 开关打开且私有 API 可用时关闭物理屏；看门狗是可选兜底（快捷键 ⌃⌥⌘9 始终可用）
@@ -42,7 +56,8 @@ final class Coordinator {
         guard connected else { return "等待其它设备连接中" }
         let who = controllerName ?? "未知设备"
         if let c = display.current, display.isActive {
-            return "\(who) 已连接 · 虚拟屏已匹配 \(c.sizeLabel)\(display.physicalOff ? " · 物理屏幕已软关闭" : "")"
+            let audio = AudioControl.pending ? " · 本机已静音" : ""
+            return "\(who) 已连接 · 虚拟屏已匹配 \(c.sizeLabel)\(display.physicalOff ? " · 物理屏幕已软关闭" : "")\(audio)"
         }
         return "\(who) 已连接 · 虚拟屏没有调整"
     }
@@ -54,6 +69,10 @@ final class Coordinator {
         controllerName = nil
         openedUUWindow = false
         onChange?()
+        // 远程开始：本机扬声器静音，声音只走控制端
+        if store.config.shouldMuteLocally {
+            AudioControl.muteForRemote()
+        }
         guard !store.config.paused else { return }
         if pollName() { return }
         namePoll?.invalidate()
@@ -68,6 +87,8 @@ final class Coordinator {
         namePoll = nil
         controllerName = nil
         onChange?()
+        // 远程结束：恢复本机音频
+        AudioControl.restoreAfterRemote(reason: "远程结束")
         // 物理屏立刻点亮（本机要用），虚拟屏留 15 秒：
         // 快速重连视为同一次远程，避免拆建导致的模式回退与画面黑边
         display.park()

@@ -104,7 +104,7 @@ designated => identifier "com.corndog.uudisplay" and certificate root = H"4191e3
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `UUyc-companion-1.1.3-fix.1.dmg`，打开后把 App 拖进 Applications。
+从 [Releases](../../releases) 下载 `UUyc-companion-1.1.3-fix.2.dmg`，打开后把 App 拖进 Applications。
 
 **必须授权一次**（否则无法识别是哪台设备连入）：
 
@@ -113,6 +113,11 @@ designated => identifier "com.corndog.uudisplay" and certificate root = H"4191e3
 若列表里没有，点 `+` 添加 `/Applications/UUyc companion.app`。本版签名已固定，之后升级不会掉。
 
 恢复屏幕的快捷键：**⌃⌥⌘9**
+
+两个新功能都可以在设置里单独关闭：
+
+- **远程时静音这台 Mac 的扬声器**（默认开）：声音只从控制端播放
+- **自动修复卡住的修饰键**（默认开）：只在远程期间生效
 
 ## 从源码构建
 
@@ -145,14 +150,51 @@ SIGN_IDENTITY=- bash scripts/build-app.sh
 PASS: Android without overlay, unchanged session, debounce, delayed name, device switch, disconnect
 PASS: blocked AX keeps main thread responsiveness; no overlapping reads; overlay disconnect; stale result rejected
 PASS: 三路在场信号、未知信号、静默期、快速重连与模式目标判定
+PASS: 可读取设备静音状态
+PASS: HID 修饰键状态读取正常，未按键时不误判
+PASS: 幽灵按键判定逻辑自洽
+PASS: 三种音频恢复场景判定正确
+PASS: 音频与修饰键守卫检查全部通过（未改动系统音频状态）
 ```
 
-## 已知未修
+### 7. 远程无声（上游 issue #16）
 
-以下两个问题需要改动输入/音频路径，风险高于本次修复范围，未包含：
+**根因**：UU 会建两条 SCStream——一条只采画面（`type=0`），一条同时采音频和画面（`type=1` + `type=0`）。
+关闭物理屏会改变显示器拓扑，UU 随即重建推流，而重建出来的流**只注册了画面输出，没有音频输出**。
+日志实证：全天 46 次 `type=0`、仅 2 次 `type=1`，且这两次都发生在显示器拓扑稳定之后。
 
-- **远程无声**（上游 issue #16）：物理屏全关后 ScreenCaptureKit 音频采集会停。
-- **Command 键卡住**（上游 issue #17）：Windows 远控 Mac 时偶发，怀疑热键冲突。
+**修复**：新增「远程时静音本机扬声器」（`AudioControl.swift`）。
+
+这个思路的前提必须先验证：**设备静音后 ScreenCaptureKit 还能不能采到声音**。
+实测（macOS 27.3 / M5，`SCStream capturesAudio = true`）：
+
+| 状态 | samples | peak | nonZero |
+|---|---|---|---|
+| 正常音量 | 150 | 0.0009 | 22537 |
+| 设备已静音 | 151 | 0.0089 | 46649 |
+
+结论：设备级 mute 只影响「本机扬声器放不放声」，**不影响系统音频采集**。
+于是「声音走控制端、本机不出声」可以靠 mute 实现，且 mute 不改变显示器拓扑，
+不会触发上面那个重建竞态。
+
+### 8. Command 卡键（上游 issue #17）
+
+**根因**：修饰键的按下由 `keyDown` 建立、松开由 `keyUp` 清除。远控链路里 `keyUp` 会丢
+（切窗口、网络抖动、控制端焦点变化），UU 发了 `keyDown` 却没发 `keyUp`，HID 状态就永远停在按下。
+
+实测确认（注入一个只有 keyDown 的 Command）：
+
+```
+基线:    eventFlagsCmd=false  keyState=false  realHID=false
+注入后:  eventFlagsCmd=true   keyState=true   realHID=false   ← 幽灵按键
+补keyUp: eventFlagsCmd=false  keyState=false  realHID=false   ← 修复
+```
+
+`realHID=false` 是关键：事件流说按着，但真实键盘没按。
+
+**修复**：新增 `ModifierGuard.swift`。远程期间每 0.2 秒核对一次：
+若事件流说某修饰键按着、而 IOKit HID 显示真实键盘没按，连续 3 拍（0.6 秒）确认后补发 `keyUp`。
+真实按住时一律不干预。覆盖 Command / Option / Control / Shift 的左右键共 8 个。
 
 ## 许可
 

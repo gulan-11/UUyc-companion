@@ -57,9 +57,30 @@ enum Watchdog {
         var uuGoneSince: Date?
         var disabledSince = Date()
         var lastPending: [CGDirectDisplayID]?
+        var audioGoneSince: Date?
         while true {
             autoreleasepool {
                 Heartbeat.beat(Heartbeat.watchdogURL)
+
+                // 音频兜底：主程序崩溃/被杀后，本机不该一直静音
+                if AudioControl.pending {
+                    let hbAudio = Heartbeat.read(Heartbeat.appURL)
+                    let appAlive = hbAudio.map { kill($0.pid, 0) == 0 } ?? false
+                    let healthy = appAlive && (hbAudio?.age ?? .infinity) < appMaxAge
+                    if !healthy {
+                        AudioControl.restoreAfterRemote(reason: "看门狗：主程序\(appAlive ? "卡死" : "不在")")
+                        audioGoneSince = nil
+                    } else if !(assumeUU || UUPresence.any() || UUPresence.servingAssertion()) {
+                        audioGoneSince = audioGoneSince ?? Date()
+                        if Date().timeIntervalSince(audioGoneSince!) > uuGoneLimit {
+                            AudioControl.restoreAfterRemote(reason: "看门狗：UU 确已断开但本机仍静音")
+                            audioGoneSince = nil
+                        }
+                    } else {
+                        audioGoneSince = nil
+                    }
+                }
+
                 guard let pending = PhysicalDisplays.pending else {
                     uuGoneSince = nil
                     lastPending = nil

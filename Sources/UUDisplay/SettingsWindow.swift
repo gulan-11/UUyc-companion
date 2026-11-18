@@ -17,6 +17,8 @@ final class SettingsModel: ObservableObject {
     @Published var expanded: SettingsPane?
     @Published var autoVirtual: Bool
     @Published var disablePhysical: Bool
+    @Published var muteLocally: Bool
+    @Published var fixStuckModifiers: Bool
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var loginError: String?
     @Published var watchdogEnabled: Bool
@@ -38,6 +40,8 @@ final class SettingsModel: ObservableObject {
     init() {
         autoVirtual = !store.config.paused
         disablePhysical = store.config.shouldDisablePhysical
+        muteLocally = store.config.shouldMuteLocally
+        fixStuckModifiers = store.config.shouldFixStuckModifiers
         watchdogEnabled = store.config.shouldRunWatchdog
         devices.onSaved = { [weak self] in self?.devicesSaved() }
     }
@@ -90,6 +94,24 @@ final class SettingsModel: ObservableObject {
         setPaused?(!on)
         Log.info("设置：自动启动虚拟屏 → \(on ? "开" : "关")")
         if !fallbackAvailable && expanded == .fallback { withAnimation { expanded = nil } }
+    }
+
+    /// 远程期间静音本机扬声器：声音只走控制端
+    func toggleMuteLocally(_ on: Bool) {
+        muteLocally = on
+        store.config.muteLocally = on
+        Log.info("设置：远程时静音本机 → \(on ? "开" : "关")")
+        // 关掉时如果正静音着，立刻恢复
+        if !on, AudioControl.pending {
+            AudioControl.restoreAfterRemote(reason: "设置关闭")
+        }
+    }
+
+    /// 自动修复卡住的修饰键
+    func toggleFixStuckModifiers(_ on: Bool) {
+        fixStuckModifiers = on
+        store.config.fixStuckModifiers = on
+        Log.info("设置：修复卡住的修饰键 → \(on ? "开" : "关")")
     }
 
     func toggleDisablePhysical(_ on: Bool) {
@@ -305,6 +327,14 @@ struct ControlledPanel: View {
             if !model.autoVirtual {
                 Text("要先打开「自动准备虚拟屏」。").font(.caption).foregroundStyle(.secondary)
             }
+            Divider()
+            row("远程时静音这台 Mac 的扬声器",
+                "远程期间把这台 Mac 的输出设备静音，声音只从控制端（Windows / 手机）播放，本机不出声。\n实测：设备静音不影响 UU 采集系统音频，控制端照常能听到。远程结束自动恢复原来的静音状态。",
+                isOn: Binding(get: { model.muteLocally }, set: { model.toggleMuteLocally($0) }))
+            Divider()
+            row("自动修复卡住的修饰键",
+                "远控时偶发 Command / Option 收不回来（点图标弹文件夹、菜单栏点不动）。\n开启后会在远程期间核对真实键盘状态，发现幽灵按下就补发 keyUp 清除。只在远程时生效。",
+                isOn: Binding(get: { model.fixStuckModifiers }, set: { model.toggleFixStuckModifiers($0) }))
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
